@@ -24,6 +24,75 @@ from abc import ABC, abstractmethod
 import webbrowser
 
 # ─────────────────────────────────────────────
+#  DPI ÖLÇEKLENDIRME
+# ─────────────────────────────────────────────
+def _get_dpi_scale() -> float:
+    """
+    Windows DPI ölçeğini tespit eder (örn. 1.25 = %125, 1.5 = %150).
+    Diğer platformlarda 1.0 döner.
+    """
+    try:
+        import ctypes
+        awareness = ctypes.c_int()
+        ctypes.windll.shcore.GetProcessDpiAwareness(0, ctypes.byref(awareness))
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        return dpi / 96.0
+    except Exception:
+        return 1.0
+
+DPI_SCALE = _get_dpi_scale()
+
+def sc(value: int) -> int:
+    """Verilen piksel değerini DPI ölçeğine göre ölçeklendirir."""
+    return max(1, round(value * DPI_SCALE))
+
+def sf(size: int) -> int:
+    """Font boyutunu DPI ölçeğine göre ölçeklendirir."""
+    return max(8, round(size * DPI_SCALE))
+
+# ─────────────────────────────────────────────
+#  İKON (base64 gömülü .ico)
+# ─────────────────────────────────────────────
+import base64, tempfile, atexit
+
+ICON_B64 = (
+    (
+    "AAABAAEAEBAAAAAAIAC9AAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAQAAAAEAgGAAAAH/P/YQAAAIRJ"
+    "REFUeJylUzsOgCAMbQ230bDrgkfXBXeC59GpyZNQUvBNNOH9+DAR0bHODw1gv25mJIeYvazPbUkWkQkH"
+    "JKGYWaDHWRWwOgtcixhixmS2BIBPFRSrCvR2F7D2BhRHX5qpFcrOOON5qQk0CFlStA5RJSNcbaOFKOhK"
+    "MCxQXjHOTPTvO7+4HziJueObpgAAAABJRU5ErkJggg=="
+)
+)
+
+_icon_tmp_path = None
+
+def _setup_icon(root: tk.Tk):
+    """
+    Base64 ikonunu geçici bir .ico dosyasına yazar ve pencereye atar.
+    Uygulama kapanınca geçici dosya silinir.
+    """
+    global _icon_tmp_path
+    if ICON_B64 == (
+    "AAABAAEAEBAAAAAAIAC9AAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAQAAAAEAgGAAAAH/P/YQAAAIRJ"
+    "REFUeJylUzsOgCAMbQ230bDrgkfXBXeC59GpyZNQUvBNNOH9+DAR0bHODw1gv25mJIeYvazPbUkWkQkH"
+    "JKGYWaDHWRWwOgtcixhixmS2BIBPFRSrCvR2F7D2BhRHX5qpFcrOOON5qQk0CFlStA5RJSNcbaOFKOhK"
+    "MCxQXjHOTPTvO7+4HziJueObpgAAAABJRU5ErkJggg=="
+):
+        return  # Geliştirme modunda ikon yoksa sessizce geç
+    try:
+        data = base64.b64decode(ICON_B64)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ico")
+        tmp.write(data)
+        tmp.close()
+        _icon_tmp_path = tmp.name
+        root.iconbitmap(_icon_tmp_path)
+        atexit.register(lambda: os.unlink(_icon_tmp_path) if os.path.exists(_icon_tmp_path) else None)
+    except Exception:
+        pass  # İkon yüklenemezse uygulama çalışmaya devam eder
+
+
+# ─────────────────────────────────────────────
 #  DİL / STRINGS  (ileride çeviri buradan)
 # ─────────────────────────────────────────────
 STRINGS = {
@@ -73,7 +142,6 @@ STRINGS = {
 }
 
 class LanguageManager:
-    """Şu an tek dil var; ileride lang parametresi ile genişletilir."""
     def __init__(self, lang="tr"):
         self.lang = lang
 
@@ -82,10 +150,10 @@ class LanguageManager:
         return text.format(**kwargs) if kwargs else text
 
 LM = LanguageManager("tr")
-t = LM.t   # kısayol
+t = LM.t
 
 # ─────────────────────────────────────────────
-#  TEMA
+#  TEMA  (DPI'a duyarlı fontlar)
 # ─────────────────────────────────────────────
 THEME = {
     "bg":           "#F5F0EB",
@@ -103,11 +171,11 @@ THEME = {
     "btn_bg":       "#C0392B",
     "btn_fg":       "#FFFFFF",
     "btn_hover":    "#922B21",
-    "font_main":    ("Segoe UI", 10),
-    "font_title":   ("Segoe UI", 18, "bold"),
-    "font_sub":     ("Segoe UI", 9),
-    "font_btn":     ("Segoe UI", 10, "bold"),
-    "font_mono":    ("Consolas", 9),
+    "font_main":    ("Segoe UI", sf(10)),
+    "font_title":   ("Segoe UI", sf(18), "bold"),
+    "font_sub":     ("Segoe UI", sf(9)),
+    "font_btn":     ("Segoe UI", sf(10), "bold"),
+    "font_mono":    ("Consolas", sf(9)),
 }
 
 # ─────────────────────────────────────────────
@@ -116,15 +184,15 @@ THEME = {
 class HoverButton(tk.Label):
     def __init__(self, master, text, command=None, style="primary", **kw):
         styles = {
-            "primary": (THEME["btn_bg"],    THEME["btn_fg"],  THEME["btn_hover"]),
-            "ghost":   (THEME["card"],      THEME["accent"],  THEME["border"]),
-            "tool":    (THEME["card"],      THEME["text"],    THEME["bg"]),
+            "primary": (THEME["btn_bg"],  THEME["btn_fg"],  THEME["btn_hover"]),
+            "ghost":   (THEME["card"],    THEME["accent"],  THEME["border"]),
+            "tool":    (THEME["card"],    THEME["text"],    THEME["bg"]),
         }
         bg, fg, hover = styles.get(style, styles["primary"])
         super().__init__(
             master, text=text, cursor="hand2",
             font=THEME["font_btn"], fg=fg, bg=bg,
-            padx=18, pady=10, relief="flat",
+            padx=sc(18), pady=sc(10), relief="flat",
             **kw
         )
         self._bg, self._hover, self._cmd = bg, hover, command
@@ -136,11 +204,6 @@ class HoverButton(tk.Label):
 #  ARAÇ TEMEL SINIFI
 # ─────────────────────────────────────────────
 class ToolBase(ABC):
-    """
-    Yeni araç eklemek için bu sınıfı miras al ve
-    title, description, build_form, run metodlarını doldur.
-    Sonra aşağıdaki TOOLS listesine ekle.
-    """
     @property
     @abstractmethod
     def title(self) -> str: ...
@@ -154,9 +217,7 @@ class ToolBase(ABC):
     def icon(self) -> str: ...
 
     @abstractmethod
-    def build_form(self, parent: tk.Frame, log_fn) -> dict:
-        """Form widget'larını parent'a ekle, state dict döndür."""
-        ...
+    def build_form(self, parent: tk.Frame, log_fn) -> dict: ...
 
     @abstractmethod
     def run(self, state: dict, log_fn, done_fn): ...
@@ -170,8 +231,10 @@ class PdfMergerTool(ToolBase):
     icon        = "📎"
 
     def build_form(self, parent, log_fn):
-        state = {"folder": tk.StringVar(), "outname": tk.StringVar(value="Birlestirilmis_Dosya.pdf")}
-
+        state = {
+            "folder":  tk.StringVar(),
+            "outname": tk.StringVar(value="Birlestirilmis_Dosya.pdf"),
+        }
         _form_row(parent, t("label_folder"),
                   state["folder"], lambda: _pick_folder(state["folder"]))
         _form_text(parent, t("label_outname"), state["outname"])
@@ -188,9 +251,7 @@ class PdfMergerTool(ToolBase):
                 log_fn(t("log_err", name="pypdf", err="Kütüphane eksik. pip install pypdf"), "err")
                 done_fn(False); return
 
-            if not folder:
-                log_fn(t("err_no_folder"), "err"); done_fn(False); return
-            if not os.path.isdir(folder):
+            if not folder or not os.path.isdir(folder):
                 log_fn(t("err_no_folder"), "err"); done_fn(False); return
 
             log_fn(t("log_scanning"), "info")
@@ -204,7 +265,6 @@ class PdfMergerTool(ToolBase):
                  if f.lower().endswith('.pdf') and f != outname],
                 key=natural_sort
             )
-
             if not pdfs:
                 log_fn(t("err_no_pdf"), "err"); done_fn(False); return
 
@@ -237,28 +297,18 @@ class PdfMergerTool(ToolBase):
 #  DÖNÜŞTÜRME MOTORU TESPİTİ
 # ─────────────────────────────────────────────
 def _find_libreoffice() -> str | None:
-    """
-    Sistemde LibreOffice soffice.exe yolunu döndürür.
-    Bulamazsa None döner.
-    Yeni sürüm yolları eklenmek istenirse bu fonksiyona eklenir.
-    """
-    # 1) PATH üzerinde mi?
     try:
         result = subprocess.run(
-            ["soffice", "--version"],
-            capture_output=True, timeout=5
-        )
+            ["soffice", "--version"], capture_output=True, timeout=5)
         if result.returncode == 0:
             return "soffice"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # 2) Windows tipik kurulum yolları
     candidates = [
         r"C:\Program Files\LibreOffice\program\soffice.exe",
         r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
     ]
-    # Versiyonlu klasörler de olabilir: "LibreOffice 7.6" gibi
     for pattern in [
         r"C:\Program Files\LibreOffice*\program\soffice.exe",
         r"C:\Program Files (x86)\LibreOffice*\program\soffice.exe",
@@ -268,20 +318,7 @@ def _find_libreoffice() -> str | None:
     for path in candidates:
         if os.path.isfile(path):
             return path
-
     return None
-
-
-def _has_word() -> bool:
-    """win32com ile Word başlatılabilir mi?"""
-    try:
-        import win32com.client
-        app = win32com.client.DispatchEx("Word.Application")
-        app.Quit()
-        return True
-    except Exception:
-        return False
-
 
 # ─────────────────────────────────────────────
 #  ARAÇ 2: WORD → PDF
@@ -293,8 +330,8 @@ class Word2PdfTool(ToolBase):
 
     def build_form(self, parent, log_fn):
         state = {
-            "folder":  tk.StringVar(),
-            "delete":  tk.BooleanVar(value=False),
+            "folder": tk.StringVar(),
+            "delete": tk.BooleanVar(value=False),
         }
         _form_row(parent, t("label_folder"),
                   state["folder"], lambda: _pick_folder(state["folder"]))
@@ -303,7 +340,6 @@ class Word2PdfTool(ToolBase):
 
     def run(self, state, log_fn, done_fn):
         from pathlib import Path
-
         folder    = state["folder"].get().strip()
         do_delete = state["delete"].get()
 
@@ -319,9 +355,8 @@ class Word2PdfTool(ToolBase):
             if not word_files:
                 log_fn(t("err_no_word"), "err"); done_fn(False); return
 
-            # ── Motor seçimi ──────────────────────────────────
-            use_word    = False
-            libre_path  = None
+            use_word   = False
+            libre_path = None
 
             try:
                 import win32com.client as _wc
@@ -335,21 +370,16 @@ class Word2PdfTool(ToolBase):
                 libre_path = _find_libreoffice()
 
             if not use_word and libre_path is None:
-                # Hiçbiri yok — UI thread'inde kullanıcıya sor
                 def _ask():
                     ans = messagebox.askyesno(
-                        t("libre_offer_title"),
-                        t("libre_offer_msg")
-                    )
+                        t("libre_offer_title"), t("libre_offer_msg"))
                     if ans:
-                        webbrowser.open("https://www.libreoffice.org/download/download-libreoffice/")
+                        webbrowser.open(
+                            "https://www.libreoffice.org/download/download-libreoffice/")
                     log_fn(t("err_no_engine"), "err")
                     done_fn(False)
-                # tkinter çağrısı ana thread'den yapılmalı
-                import tkinter as _tk
-                _tk._default_root.after(0, _ask)
+                tk._default_root.after(0, _ask)
                 return
-            # ─────────────────────────────────────────────────
 
             if use_word:
                 log_fn(t("engine_word"), "info")
@@ -360,11 +390,8 @@ class Word2PdfTool(ToolBase):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ── Microsoft Word motoru ─────────────────
     def _run_with_word(self, word_files, do_delete, log_fn, done_fn):
         import win32com.client
-        from pathlib import Path
-
         try:
             word = win32com.client.DispatchEx("Word.Application")
             word.Visible = False
@@ -392,7 +419,6 @@ class Word2PdfTool(ToolBase):
 
         self._finish(ok, skip, converted, do_delete, log_fn, done_fn)
 
-    # ── LibreOffice motoru ────────────────────
     def _run_with_libreoffice(self, soffice, word_files, do_delete, log_fn, done_fn):
         ok, skip, converted = 0, 0, []
         for dosya in word_files:
@@ -411,7 +437,8 @@ class Word2PdfTool(ToolBase):
                     ok += 1; converted.append(dosya)
                 else:
                     err_msg = result.stderr.decode(errors="replace").strip()
-                    log_fn(t("log_err", name=dosya.name, err=err_msg or "bilinmeyen hata"), "err")
+                    log_fn(t("log_err", name=dosya.name,
+                             err=err_msg or "bilinmeyen hata"), "err")
             except subprocess.TimeoutExpired:
                 log_fn(t("log_err", name=dosya.name, err="zaman aşımı"), "err")
             except Exception as e:
@@ -419,7 +446,6 @@ class Word2PdfTool(ToolBase):
 
         self._finish(ok, skip, converted, do_delete, log_fn, done_fn)
 
-    # ── Ortak bitiş ──────────────────────────
     def _finish(self, ok, skip, converted, do_delete, log_fn, done_fn):
         log_fn(t("log_summary", ok=ok, skip=skip), "info")
         if do_delete and converted:
@@ -449,39 +475,38 @@ def _pick_folder(var: tk.StringVar):
 
 def _form_row(parent, label_text, var, browse_cmd):
     frame = tk.Frame(parent, bg=THEME["card"])
-    frame.pack(fill="x", pady=(0, 12))
-
+    frame.pack(fill="x", pady=(0, sc(12)))
     tk.Label(frame, text=label_text, bg=THEME["card"],
              fg=THEME["subtext"], font=THEME["font_sub"]).pack(anchor="w")
-
     row = tk.Frame(frame, bg=THEME["card"])
-    row.pack(fill="x", pady=(4, 0))
-
+    row.pack(fill="x", pady=(sc(4), 0))
     entry = tk.Entry(row, textvariable=var, font=THEME["font_main"],
                      bg=THEME["bg"], fg=THEME["text"],
                      relief="flat", bd=0,
-                     highlightthickness=1, highlightbackground=THEME["border"],
+                     highlightthickness=1,
+                     highlightbackground=THEME["border"],
                      highlightcolor=THEME["accent"])
-    entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
-
-    HoverButton(row, text=t("btn_browse"), command=browse_cmd,
-                style="ghost").pack(side="right")
+    entry.pack(side="left", fill="x", expand=True,
+               ipady=sc(6), padx=(0, sc(8)))
+    HoverButton(row, text=t("btn_browse"),
+                command=browse_cmd, style="ghost").pack(side="right")
 
 def _form_text(parent, label_text, var):
     frame = tk.Frame(parent, bg=THEME["card"])
-    frame.pack(fill="x", pady=(0, 12))
+    frame.pack(fill="x", pady=(0, sc(12)))
     tk.Label(frame, text=label_text, bg=THEME["card"],
              fg=THEME["subtext"], font=THEME["font_sub"]).pack(anchor="w")
     entry = tk.Entry(frame, textvariable=var, font=THEME["font_main"],
                      bg=THEME["bg"], fg=THEME["text"],
                      relief="flat", bd=0,
-                     highlightthickness=1, highlightbackground=THEME["border"],
+                     highlightthickness=1,
+                     highlightbackground=THEME["border"],
                      highlightcolor=THEME["accent"])
-    entry.pack(fill="x", pady=(4, 0), ipady=6)
+    entry.pack(fill="x", pady=(sc(4), 0), ipady=sc(6))
 
 def _form_check(parent, label_text, var):
     frame = tk.Frame(parent, bg=THEME["card"])
-    frame.pack(fill="x", pady=(0, 12))
+    frame.pack(fill="x", pady=(0, sc(12)))
     cb = tk.Checkbutton(frame, text=label_text, variable=var,
                         bg=THEME["card"], fg=THEME["text"],
                         activebackground=THEME["card"],
@@ -497,9 +522,13 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(t("app_title"))
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(sc(480), sc(540))
         self.configure(bg=THEME["bg"])
-        self._center(520, 620)
+        self._center(sc(520), sc(640))
+
+        # İkonu ayarla
+        _setup_icon(self)
 
         self._container = tk.Frame(self, bg=THEME["bg"])
         self._container.pack(fill="both", expand=True)
@@ -507,30 +536,28 @@ class App(tk.Tk):
         self._show_home()
 
     def _center(self, w, h):
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
 
     def _clear(self):
         for w in self._container.winfo_children():
             w.destroy()
 
-    # ── ANA EKRAN ──────────────────────────────
     def _show_home(self):
         self._clear()
         p = self._container
 
-        # Başlık
-        hdr = tk.Frame(p, bg=THEME["accent"], height=6)
+        hdr = tk.Frame(p, bg=THEME["accent"], height=sc(6))
         hdr.pack(fill="x")
 
         tk.Label(p, text=t("app_title"), font=THEME["font_title"],
                  bg=THEME["bg"], fg=THEME["text"],
-                 pady=24).pack()
+                 pady=sc(24)).pack()
 
         tk.Label(p, text=t("select_tool"), font=THEME["font_main"],
-                 bg=THEME["bg"], fg=THEME["subtext"]).pack(pady=(0, 16))
+                 bg=THEME["bg"], fg=THEME["subtext"]).pack(pady=(0, sc(16)))
 
-        # Araç kartları
         for tool in TOOLS:
             self._tool_card(p, tool)
 
@@ -539,77 +566,75 @@ class App(tk.Tk):
                         highlightthickness=1,
                         highlightbackground=THEME["border"],
                         cursor="hand2")
-        card.pack(fill="x", padx=32, pady=8, ipady=4)
+        card.pack(fill="x", padx=sc(32), pady=sc(8), ipady=sc(4))
 
         inner = tk.Frame(card, bg=THEME["card"])
-        inner.pack(fill="x", padx=20, pady=14)
+        inner.pack(fill="x", padx=sc(20), pady=sc(14))
 
         tk.Label(inner, text=f"{tool.icon}  {tool.title}",
-                 font=("Segoe UI", 12, "bold"),
+                 font=("Segoe UI", sf(12), "bold"),
                  bg=THEME["card"], fg=THEME["text"],
                  anchor="w").pack(fill="x")
 
         tk.Label(inner, text=tool.description,
                  font=THEME["font_sub"],
                  bg=THEME["card"], fg=THEME["subtext"],
-                 anchor="w").pack(fill="x", pady=(4, 0))
+                 anchor="w").pack(fill="x", pady=(sc(4), 0))
 
-        # Kart tıklanınca araç ekranına git
-        for w in [card, inner] + inner.winfo_children():
+        all_widgets = [card, inner] + inner.winfo_children()
+        for w in all_widgets:
             w.bind("<Button-1>", lambda e, tl=tool: self._show_tool(tl))
-            w.bind("<Enter>", lambda e, c=card: c.config(bg=THEME["bg"],
-                                                         highlightbackground=THEME["accent"]))
-            w.bind("<Leave>", lambda e, c=card: c.config(bg=THEME["card"],
-                                                         highlightbackground=THEME["border"]))
+            w.bind("<Enter>", lambda e, c=card: c.config(
+                bg=THEME["bg"], highlightbackground=THEME["accent"]))
+            w.bind("<Leave>", lambda e, c=card: c.config(
+                bg=THEME["card"], highlightbackground=THEME["border"]))
 
-    # ── ARAÇ EKRANI ────────────────────────────
     def _show_tool(self, tool: ToolBase):
         self._clear()
         p = self._container
 
-        # Üst çubuk
-        bar = tk.Frame(p, bg=THEME["accent"], height=6)
+        bar = tk.Frame(p, bg=THEME["accent"], height=sc(6))
         bar.pack(fill="x")
 
         top = tk.Frame(p, bg=THEME["bg"])
-        top.pack(fill="x", padx=24, pady=(16, 0))
+        top.pack(fill="x", padx=sc(24), pady=(sc(16), 0))
 
         HoverButton(top, text=t("btn_back"),
                     command=self._show_home,
                     style="ghost").pack(side="left")
 
         tk.Label(top, text=f"{tool.icon}  {tool.title}",
-                 font=("Segoe UI", 13, "bold"),
-                 bg=THEME["bg"], fg=THEME["text"]).pack(side="left", padx=12)
+                 font=("Segoe UI", sf(13), "bold"),
+                 bg=THEME["bg"], fg=THEME["text"]).pack(side="left", padx=sc(12))
 
-        # Form kartı
         card = tk.Frame(p, bg=THEME["card"],
                         highlightthickness=1,
                         highlightbackground=THEME["border"])
-        card.pack(fill="x", padx=24, pady=16)
+        card.pack(fill="x", padx=sc(24), pady=sc(16))
 
         form_inner = tk.Frame(card, bg=THEME["card"])
-        form_inner.pack(fill="x", padx=20, pady=16)
+        form_inner.pack(fill="x", padx=sc(20), pady=sc(16))
 
         state = tool.build_form(form_inner, self._log)
 
-        # Başlat butonu
-        self._start_btn = HoverButton(p, text=t("btn_start"),
-                                      command=lambda: self._run_tool(tool, state),
-                                      style="primary")
-        self._start_btn.pack(pady=(0, 12))
+        self._start_btn = HoverButton(
+            p, text=t("btn_start"),
+            command=lambda: self._run_tool(tool, state),
+            style="primary")
+        self._start_btn.pack(pady=(0, sc(12)))
 
-        # Log alanı
         log_frame = tk.Frame(p, bg=THEME["log_bg"],
                              highlightthickness=1,
                              highlightbackground=THEME["border"])
-        log_frame.pack(fill="both", expand=True, padx=24, pady=(0, 16))
+        log_frame.pack(fill="both", expand=True,
+                       padx=sc(24), pady=(0, sc(16)))
 
-        self._log_text = tk.Text(log_frame, bg=THEME["log_bg"], fg=THEME["log_fg"],
-                                 font=THEME["font_mono"],
-                                 relief="flat", bd=0,
-                                 state="disabled", wrap="word",
-                                 padx=10, pady=10)
+        self._log_text = tk.Text(
+            log_frame, bg=THEME["log_bg"], fg=THEME["log_fg"],
+            font=THEME["font_mono"],
+            relief="flat", bd=0,
+            state="disabled", wrap="word",
+            padx=sc(10), pady=sc(10))
         self._log_text.pack(fill="both", expand=True)
 
         self._log_text.tag_config("ok",   foreground=THEME["log_ok"])
@@ -626,7 +651,6 @@ class App(tk.Tk):
 
     def _run_tool(self, tool: ToolBase, state: dict):
         self._start_btn.config(text=t("running"))
-        # Buton geçici olarak devre dışı
         self._start_btn.unbind("<Button-1>")
 
         def done(success: bool):
