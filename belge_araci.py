@@ -93,6 +93,48 @@ def _setup_icon(root: tk.Tk):
 
 
 # ─────────────────────────────────────────────
+#  DOSYA ADI GÜVENLİĞİ
+# ─────────────────────────────────────────────
+def sanitize_filename(name: str, fallback: str = "Birlestirilmis_Dosya.pdf") -> str:
+    """
+    Kullanıcıdan gelen dosya adını temizler:
+      - Null byte ve kontrol karakterlerini kaldırır
+      - Path traversal karakterlerini kaldırır (/ \\ .. : * ? " < > |)
+      - Baştaki/sondaki boşluk ve noktaları kaldırır
+      - 200 karakterle sınırlar
+      - .pdf uzantısını zorlar (ne yazılırsa yazılsın)
+      - Boş kalırsa fallback adı döner
+    """
+    if not name or not name.strip():
+        return fallback
+
+    # Null byte ve ASCII kontrol karakterleri
+    name = re.sub(r'[\x00-\x1f\x7f]', '', name)
+
+    # Path traversal ve Windows yasak karakterleri
+    name = re.sub(r'[/\\:*?"<>|]', '', name)
+
+    # ".." kalıntısı
+    name = name.replace('..', '')
+
+    # Baş/son boşluk ve nokta (Windows sorun çıkarır)
+    name = name.strip('. ')
+
+    if not name:
+        return fallback
+
+    # Uzantıyı zorla: mevcut uzantıyı at, .pdf ekle
+    stem = os.path.splitext(name)[0].strip('. ')
+    if not stem:
+        return fallback
+
+    # Uzunluk sınırı (255 - ".pdf" = 251, biz 200 yapıyoruz)
+    stem = stem[:200]
+
+    return stem + ".pdf"
+
+
+# ─────────────────────────────────────────────
 #  DİL / STRINGS  (ileride çeviri buradan)
 # ─────────────────────────────────────────────
 STRINGS = {
@@ -242,7 +284,7 @@ class PdfMergerTool(ToolBase):
 
     def run(self, state, log_fn, done_fn):
         folder  = state["folder"].get().strip()
-        outname = state["outname"].get().strip() or "Birlestirilmis_Dosya.pdf"
+        outname = sanitize_filename(state["outname"].get())
 
         def worker():
             try:
