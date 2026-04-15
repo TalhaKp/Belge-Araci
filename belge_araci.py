@@ -43,13 +43,32 @@ def _get_dpi_scale() -> float:
 
 DPI_SCALE = _get_dpi_scale()
 
+def _font_scale() -> float:
+    """
+    Font için ölçek faktörü hesaplar.
+    DPI bazlı ölçeği ekran yüksekliğine göre kırpar:
+      - 768px altı ekranlarda fontlar küçülür
+      - Çok yüksek DPI'da 1.5x ile sınırlanır
+    """
+    try:
+        import tkinter as _tk
+        _r = _tk.Tk()
+        sh = _r.winfo_screenheight()
+        _r.destroy()
+        screen_factor = min(1.0, sh / 900)
+        return min(1.5, DPI_SCALE * screen_factor)
+    except Exception:
+        return min(1.5, DPI_SCALE)
+
+FONT_SCALE = _font_scale()
+
 def sc(value: int) -> int:
     """Verilen piksel değerini DPI ölçeğine göre ölçeklendirir."""
     return max(1, round(value * DPI_SCALE))
 
 def sf(size: int) -> int:
-    """Font boyutunu DPI ölçeğine göre ölçeklendirir."""
-    return max(8, round(size * DPI_SCALE))
+    """Font boyutunu ekran boyutu ve DPI'a göre ölçeklendirir."""
+    return max(8, round(size * FONT_SCALE))
 
 # ─────────────────────────────────────────────
 #  İKON (base64 gömülü .ico)
@@ -149,6 +168,7 @@ STRINGS = {
         "label_folder":     "Klasör:",
         "label_outname":    "Çıktı dosya adı:",
         "label_delete":     "Orijinal Word dosyaları dönüşüm sonrası silinsin mi?",
+        "label_delete_pptx":"Orijinal PowerPoint dosyaları dönüşüm sonrası silinsin mi?",
         "running":          "İşlem devam ediyor…",
         "done":             "✅  İşlem tamamlandı!",
         "err_no_folder":    "Lütfen bir klasör seçin.",
@@ -171,8 +191,13 @@ STRINGS = {
         "yes":              "Evet",
         "no":               "Hayır",
         "engine_word":      "Microsoft Word kullanılıyor…",
+        "engine_ppt":       "Microsoft PowerPoint kullanılıyor…",
         "engine_libre":     "LibreOffice kullanılıyor…",
         "err_no_engine":    "Dönüştürücü bulunamadı.",
+        "pptx2pdf_title":   "PPTX → PDF Dönüştürücü",
+        "pptx2pdf_desc":    "Klasördeki tüm .ppt/.pptx dosyalarını PDF'e çevirir.",
+        "err_no_pptx":      "Seçilen klasörde hiç PowerPoint dosyası yok.",
+        "err_ppt_app":      "Microsoft PowerPoint başlatılamadı.",
         "libre_offer_title":"LibreOffice Bulunamadı",
         "libre_offer_msg":  (
             "Word → PDF dönüşümü için Microsoft Word veya LibreOffice gereklidir.\n\n"
@@ -500,11 +525,151 @@ class Word2PdfTool(ToolBase):
         done_fn(True)
 
 # ─────────────────────────────────────────────
+#  ARAÇ 3: PPTX → PDF
+# ─────────────────────────────────────────────
+class Pptx2PdfTool(ToolBase):
+    title       = t("pptx2pdf_title")
+    description = t("pptx2pdf_desc")
+    icon        = "📊"
+
+    def build_form(self, parent, log_fn):
+        state = {
+            "folder": tk.StringVar(),
+            "delete": tk.BooleanVar(value=False),
+        }
+        _form_row(parent, t("label_folder"),
+                  state["folder"], lambda: _pick_folder(state["folder"]))
+        _form_check(parent, t("label_delete_pptx"), state["delete"])
+        return state
+
+    def run(self, state, log_fn, done_fn):
+        from pathlib import Path
+        folder    = state["folder"].get().strip()
+        do_delete = state["delete"].get()
+
+        def worker():
+            if not folder or not os.path.isdir(folder):
+                log_fn(t("err_no_folder"), "err"); done_fn(False); return
+
+            klasor = Path(folder).resolve()
+            log_fn(t("log_scanning"), "info")
+
+            pptx_files = [f for f in klasor.glob('*.ppt*')
+                          if not f.name.startswith('~$')]
+            if not pptx_files:
+                log_fn(t("err_no_pptx"), "err"); done_fn(False); return
+
+            # Motor seçimi: PowerPoint → LibreOffice → link teklifi
+            use_ppt    = False
+            libre_path = None
+
+            try:
+                import win32com.client as _wc
+                _app = _wc.DispatchEx("PowerPoint.Application")
+                _app.Quit()
+                use_ppt = True
+            except Exception:
+                pass
+
+            if not use_ppt:
+                libre_path = _find_libreoffice()
+
+            if not use_ppt and libre_path is None:
+                def _ask():
+                    ans = messagebox.askyesno(
+                        t("libre_offer_title"), t("libre_offer_msg"))
+                    if ans:
+                        webbrowser.open(
+                            "https://www.libreoffice.org/download/download-libreoffice/")
+                    log_fn(t("err_no_engine"), "err")
+                    done_fn(False)
+                tk._default_root.after(0, _ask)
+                return
+
+            if use_ppt:
+                log_fn(t("engine_ppt"), "info")
+                self._run_with_ppt(pptx_files, do_delete, log_fn, done_fn)
+            else:
+                log_fn(t("engine_libre"), "info")
+                self._run_with_libreoffice(libre_path, pptx_files, do_delete, log_fn, done_fn)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_with_ppt(self, pptx_files, do_delete, log_fn, done_fn):
+        import win32com.client
+        try:
+            ppt = win32com.client.DispatchEx("PowerPoint.Application")
+            ppt.Visible = True   # PowerPoint görünür olmalı, gizli modda PDF kaydetme çalışmaz
+        except Exception as e:
+            log_fn(t("err_ppt_app") + f" ({e})", "err"); done_fn(False); return
+
+        ok, skip, converted = 0, 0, []
+        try:
+            for dosya in pptx_files:
+                pdf_yolu = dosya.with_suffix('.pdf')
+                if pdf_yolu.exists():
+                    log_fn(t("log_skipped", name=dosya.name), "info"); skip += 1; continue
+                log_fn(t("log_converting", name=dosya.name), "info")
+                try:
+                    prs = ppt.Presentations.Open(str(dosya.resolve()), WithWindow=False)
+                    # FileFormat=32 → PDF
+                    prs.SaveAs(str(pdf_yolu.resolve()), FileFormat=32)
+                    prs.Close()
+                    log_fn(t("log_ok", name=pdf_yolu.name), "ok")
+                    ok += 1; converted.append(dosya)
+                except Exception as e:
+                    log_fn(t("log_err", name=dosya.name, err=str(e)), "err")
+        finally:
+            ppt.Quit()
+
+        self._finish(ok, skip, converted, do_delete, log_fn, done_fn)
+
+    def _run_with_libreoffice(self, soffice, pptx_files, do_delete, log_fn, done_fn):
+        ok, skip, converted = 0, 0, []
+        for dosya in pptx_files:
+            pdf_yolu = dosya.with_suffix('.pdf')
+            if pdf_yolu.exists():
+                log_fn(t("log_skipped", name=dosya.name), "info"); skip += 1; continue
+            log_fn(t("log_converting", name=dosya.name), "info")
+            try:
+                result = subprocess.run(
+                    [soffice, "--headless", "--convert-to", "pdf",
+                     "--outdir", str(dosya.parent), str(dosya)],
+                    capture_output=True, timeout=120  # Büyük sunumlar için daha uzun timeout
+                )
+                if result.returncode == 0 and pdf_yolu.exists():
+                    log_fn(t("log_ok", name=pdf_yolu.name), "ok")
+                    ok += 1; converted.append(dosya)
+                else:
+                    err_msg = result.stderr.decode(errors="replace").strip()
+                    log_fn(t("log_err", name=dosya.name,
+                             err=err_msg or "bilinmeyen hata"), "err")
+            except subprocess.TimeoutExpired:
+                log_fn(t("log_err", name=dosya.name, err="zaman aşımı"), "err")
+            except Exception as e:
+                log_fn(t("log_err", name=dosya.name, err=str(e)), "err")
+
+        self._finish(ok, skip, converted, do_delete, log_fn, done_fn)
+
+    def _finish(self, ok, skip, converted, do_delete, log_fn, done_fn):
+        log_fn(t("log_summary", ok=ok, skip=skip), "info")
+        if do_delete and converted:
+            for f in converted:
+                try:
+                    f.unlink()
+                    log_fn(t("log_deleted", name=f.name), "info")
+                except Exception as e:
+                    log_fn(t("log_err", name=f.name, err=str(e)), "err")
+        done_fn(True)
+
+
+# ─────────────────────────────────────────────
 #  ARAÇ LİSTESİ  ← buraya yeni araç ekle
 # ─────────────────────────────────────────────
 TOOLS: list[ToolBase] = [
     PdfMergerTool(),
     Word2PdfTool(),
+    Pptx2PdfTool(),
 ]
 
 # ─────────────────────────────────────────────
@@ -565,9 +730,9 @@ class App(tk.Tk):
         super().__init__()
         self.title(t("app_title"))
         self.resizable(True, True)
-        self.minsize(sc(480), sc(540))
+        self.minsize(sc(520), sc(480))
         self.configure(bg=THEME["bg"])
-        self._center(sc(520), sc(640))
+        self._center(sc(620), sc(680))
 
         # İkonu ayarla
         _setup_icon(self)
