@@ -176,8 +176,13 @@ STRINGS = {
         "err_no_word":      "Seçilen klasörde hiç Word dosyası yok.",
         "err_word_app":     "Microsoft Word başlatılamadı. Word kurulu mu?",
         "merge_title":      "PDF Birleştirici",
+        "pptx_merge_title": "PPTX Birleştirici",
         "word2pdf_title":   "Word → PDF Dönüştürücü",
         "merge_desc":       "Seçilen klasördeki tüm PDF'leri tek dosyada birleştirir.",
+        "pptx_merge_desc":  "Seçilen klasördeki tüm PPTX dosyalarını tek sunumda birleştirir.",
+        "label_outname_pptx": "Çıktı dosya adı:",
+        "err_no_pptx_merge": "Seçilen klasörde hiç PPTX dosyası yok.",
+        "err_pypptx":        "python-pptx eksik. Terminale: pip install python-pptx",
         "word2pdf_desc":    "Klasördeki tüm .doc/.docx dosyalarını PDF'e çevirir.",
         "log_scanning":     "Klasör taranıyor…",
         "log_merging":      "Birleştiriliyor: {name}",
@@ -663,11 +668,125 @@ class Pptx2PdfTool(ToolBase):
         done_fn(True)
 
 
+
+# ─────────────────────────────────────────────
+#  ARAÇ 4: PPTX BİRLEŞTİRİCİ
+# ─────────────────────────────────────────────
+class PptxMergerTool(ToolBase):
+    title       = t("pptx_merge_title")
+    description = t("pptx_merge_desc")
+    icon        = "📑"
+
+    def build_form(self, parent, log_fn):
+        state = {
+            "folder":  tk.StringVar(),
+            "outname": tk.StringVar(value="Birlestirilmis_Sunum.pptx"),
+        }
+        _form_row(parent, t("label_folder"),
+                  state["folder"], lambda: _pick_folder(state["folder"]))
+        _form_text(parent, t("label_outname_pptx"), state["outname"])
+        return state
+
+    def run(self, state, log_fn, done_fn):
+        folder  = state["folder"].get().strip()
+        raw     = state["outname"].get()
+        # .pptx uzantısını zorla — sanitize_filename'in .pdf versiyonunu burada uyarlıyoruz
+        outname = self._sanitize_pptx_name(raw)
+
+        def worker():
+            try:
+                from pptx import Presentation
+            except ImportError:
+                log_fn(t("err_pypptx"), "err"); done_fn(False); return
+
+            if not folder or not os.path.isdir(folder):
+                log_fn(t("err_no_folder"), "err"); done_fn(False); return
+
+            log_fn(t("log_scanning"), "info")
+
+            def natural_sort(name):
+                return tuple(int(c) if c.isdecimal() else c.lower().strip()
+                             for c in re.split(r'(\d+)', name))
+
+            pptx_files = sorted(
+                [f for f in os.listdir(folder)
+                 if f.lower().endswith('.pptx') and f != outname
+                 and not f.startswith('~$')],
+                key=natural_sort
+            )
+
+            if not pptx_files:
+                log_fn(t("err_no_pptx_merge"), "err"); done_fn(False); return
+
+            # python-pptx'in native merge'i yok; her dosyadaki slide'ları
+            # XML seviyesinde kopyalayarak birleştiriyoruz.
+            from pptx.util import Pt
+            from lxml import etree
+            import copy, shutil
+
+            base_path = os.path.join(folder, pptx_files[0])
+            merged    = Presentation(base_path)
+            log_fn(t("log_ok", name=f"{pptx_files[0]} ({len(merged.slides)} slayt)"), "ok")
+
+            for fname in pptx_files[1:]:
+                fpath = os.path.join(folder, fname)
+                try:
+                    src = Presentation(fpath)
+                    for slide in src.slides:
+                        # Slide layout'u merged'e kopyala
+                        slide_layout = merged.slide_layouts[0]
+                        new_slide    = merged.slides.add_slide(slide_layout)
+
+                        # Mevcut placeholder'ları temizle
+                        for ph in new_slide.placeholders:
+                            sp = ph._element
+                            sp.getparent().remove(sp)
+
+                        # Kaynak slide'ın shape ağacını kopyala
+                        template = slide.shapes._spTree
+                        for el in template:
+                            new_slide.shapes._spTree.append(copy.deepcopy(el))
+
+                    log_fn(t("log_ok",
+                             name=f"{fname} ({len(src.slides)} slayt)"), "ok")
+                except Exception as e:
+                    log_fn(t("log_err", name=fname, err=str(e)), "err")
+
+            out_path = os.path.join(folder, outname)
+            try:
+                merged.save(out_path)
+                log_fn(t("log_saved", path=out_path), "info")
+                log_fn(t("log_summary",
+                         ok=len(pptx_files), skip=0), "info")
+                done_fn(True)
+            except Exception as e:
+                log_fn(t("log_err", name=outname, err=str(e)), "err")
+                done_fn(False)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _sanitize_pptx_name(name: str,
+                             fallback: str = "Birlestirilmis_Sunum.pptx") -> str:
+        if not name or not name.strip():
+            return fallback
+        name = re.sub(r'[\x00-\x1f\x7f]', '', name)
+        name = re.sub(r'[/\\:*?"<>|]', '', name)
+        name = name.replace('..', '').strip('. ')
+        if not name:
+            return fallback
+        stem = os.path.splitext(name)[0].strip('. ')
+        if not stem:
+            return fallback
+        return stem[:200] + ".pptx"
+
+
 # ─────────────────────────────────────────────
 #  ARAÇ LİSTESİ  ← buraya yeni araç ekle
 # ─────────────────────────────────────────────
 TOOLS: list[ToolBase] = [
     PdfMergerTool(),
+    PptxMergerTool(),
     Word2PdfTool(),
     Pptx2PdfTool(),
 ]
