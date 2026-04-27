@@ -689,16 +689,9 @@ class PptxMergerTool(ToolBase):
 
     def run(self, state, log_fn, done_fn):
         folder  = state["folder"].get().strip()
-        raw     = state["outname"].get()
-        # .pptx uzantısını zorla — sanitize_filename'in .pdf versiyonunu burada uyarlıyoruz
-        outname = self._sanitize_pptx_name(raw)
+        outname = self._sanitize_pptx_name(state["outname"].get())
 
         def worker():
-            try:
-                from pptx import Presentation
-            except ImportError:
-                log_fn(t("err_pypptx"), "err"); done_fn(False); return
-
             if not folder or not os.path.isdir(folder):
                 log_fn(t("err_no_folder"), "err"); done_fn(False); return
 
@@ -718,52 +711,113 @@ class PptxMergerTool(ToolBase):
             if not pptx_files:
                 log_fn(t("err_no_pptx_merge"), "err"); done_fn(False); return
 
-            # python-pptx'in native merge'i yok; her dosyadaki slide'ları
-            # XML seviyesinde kopyalayarak birleştiriyoruz.
-            from pptx.util import Pt
-            from lxml import etree
-            import copy, shutil
+            # Motor seçimi: PowerPoint COM → LibreOffice → link teklifi
+            use_ppt    = False
+            libre_path = None
 
-            base_path = os.path.join(folder, pptx_files[0])
-            merged    = Presentation(base_path)
-            log_fn(t("log_ok", name=f"{pptx_files[0]} ({len(merged.slides)} slayt)"), "ok")
+            try:
+                import win32com.client as _wc
+                _app = _wc.DispatchEx("PowerPoint.Application")
+                _app.Quit()
+                use_ppt = True
+            except Exception:
+                pass
+
+            if not use_ppt:
+                libre_path = _find_libreoffice()
+
+            if not use_ppt and libre_path is None:
+                def _ask():
+                    ans = messagebox.askyesno(
+                        t("libre_offer_title"), t("libre_offer_msg"))
+                    if ans:
+                        webbrowser.open(
+                            "https://www.libreoffice.org/download/download-libreoffice/")
+                    log_fn(t("err_no_engine"), "err")
+                    done_fn(False)
+                tk._default_root.after(0, _ask)
+                return
+
+            if use_ppt:
+                log_fn(t("engine_ppt"), "info")
+                self._run_with_ppt(folder, pptx_files, outname, log_fn, done_fn)
+            else:
+                log_fn(t("engine_libre"), "info")
+                self._run_with_libreoffice(libre_path, folder, pptx_files, outname, log_fn, done_fn)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_with_ppt(self, folder, pptx_files, outname, log_fn, done_fn):
+        """
+        PowerPoint COM ile birleştirme.
+        InsertFromFile tüm medya ve .rels referanslarını PowerPoint'in
+        kendi motoru ile taşır — bozuk referans sorunu olmaz.
+        """
+        import win32com.client
+        from pathlib import Path
+
+        try:
+            ppt = win32com.client.DispatchEx("PowerPoint.Application")
+            ppt.Visible = True
+        except Exception as e:
+            log_fn(t("err_ppt_app") + f" ({e})", "err"); done_fn(False); return
+
+        try:
+            # İlk dosyayı base olarak aç
+            base_path = str(Path(folder) / pptx_files[0])
+            merged = ppt.Presentations.Open(base_path, WithWindow=False)
+            slide_count = merged.Slides.Count
+            log_fn(t("log_ok", name=f"{pptx_files[0]} ({slide_count} slayt)"), "ok")
 
             for fname in pptx_files[1:]:
-                fpath = os.path.join(folder, fname)
+                fpath = str(Path(folder) / fname)
                 try:
-                    src = Presentation(fpath)
-                    for slide in src.slides:
-                        # Slide layout'u merged'e kopyala
-                        slide_layout = merged.slide_layouts[0]
-                        new_slide    = merged.slides.add_slide(slide_layout)
+                    # InsertFromFile: dosyadaki tüm slaytları sonuna ekle
+                    # Parametreler: dosya yolu, eklenecek index, başlangıç slayt, bitiş slayt
+                    src_prs  = ppt.Presentations.Open(fpath, WithWindow=False)
+                    src_count = src_prs.Slides.Count
+                    src_prs.Close()
 
-                        # Mevcut placeholder'ları temizle
-                        for ph in new_slide.placeholders:
-                            sp = ph._element
-                            sp.getparent().remove(sp)
-
-                        # Kaynak slide'ın shape ağacını kopyala
-                        template = slide.shapes._spTree
-                        for el in template:
-                            new_slide.shapes._spTree.append(copy.deepcopy(el))
-
-                    log_fn(t("log_ok",
-                             name=f"{fname} ({len(src.slides)} slayt)"), "ok")
+                    merged.Slides.InsertFromFile(
+                        fpath,
+                        merged.Slides.Count,  # Eklenecek pozisyon (sonuna)
+                        1,                    # Kaynak başlangıç slayt
+                        src_count             # Kaynak bitiş slayt
+                    )
+                    log_fn(t("log_ok", name=f"{fname} ({src_count} slayt)"), "ok")
                 except Exception as e:
                     log_fn(t("log_err", name=fname, err=str(e)), "err")
 
-            out_path = os.path.join(folder, outname)
-            try:
-                merged.save(out_path)
-                log_fn(t("log_saved", path=out_path), "info")
-                log_fn(t("log_summary",
-                         ok=len(pptx_files), skip=0), "info")
-                done_fn(True)
-            except Exception as e:
-                log_fn(t("log_err", name=outname, err=str(e)), "err")
-                done_fn(False)
+            out_path = str(Path(folder) / outname)
+            # FileFormat=1 → .pptx
+            merged.SaveAs(out_path, FileFormat=1)
+            merged.Close()
+            log_fn(t("log_saved", path=out_path), "info")
+            log_fn(t("log_summary", ok=len(pptx_files), skip=0), "info")
+            done_fn(True)
 
-        threading.Thread(target=worker, daemon=True).start()
+        except Exception as e:
+            log_fn(t("log_err", name=outname, err=str(e)), "err")
+            done_fn(False)
+        finally:
+            try:
+                ppt.Quit()
+            except Exception:
+                pass
+
+    def _run_with_libreoffice(self, soffice, folder, pptx_files, outname, log_fn, done_fn):
+        """
+        LibreOffice fallback: her dosyayı PDF'e çevirip python-pptx ile
+        birleştirmek yerine, soffice macro API olmadan tek bir yol var —
+        impress Python UNO. Bu ortamda UNO bağımlılığı olmadığı için
+        LibreOffice ile merge desteklenmiyor, kullanıcıyı bilgilendir.
+        """
+        log_fn(
+            "⚠️  PPTX birleştirme yalnızca Microsoft PowerPoint ile desteklenmektedir. "
+            "LibreOffice ile bu işlem yapılamıyor. Lütfen PowerPoint kurun.",
+            "err"
+        )
+        done_fn(False)
 
     @staticmethod
     def _sanitize_pptx_name(name: str,
