@@ -307,8 +307,8 @@ class PdfMergerTool(ToolBase):
             "folder":  tk.StringVar(),
             "outname": tk.StringVar(value="Birlestirilmis_Dosya.pdf"),
         }
-        _form_row(parent, t("label_folder"),
-                  state["folder"], lambda: _pick_folder(state["folder"]))
+        _form_row_with_preview(parent, t("label_folder"),
+                               state["folder"], ('.pdf',))
         _form_text(parent, t("label_outname"), state["outname"])
         return state
 
@@ -405,8 +405,8 @@ class Word2PdfTool(ToolBase):
             "folder": tk.StringVar(),
             "delete": tk.BooleanVar(value=False),
         }
-        _form_row(parent, t("label_folder"),
-                  state["folder"], lambda: _pick_folder(state["folder"]))
+        _form_row_with_preview(parent, t("label_folder"),
+                               state["folder"], ('.doc', '.docx'))
         _form_check(parent, t("label_delete"), state["delete"])
         return state
 
@@ -542,8 +542,8 @@ class Pptx2PdfTool(ToolBase):
             "folder": tk.StringVar(),
             "delete": tk.BooleanVar(value=False),
         }
-        _form_row(parent, t("label_folder"),
-                  state["folder"], lambda: _pick_folder(state["folder"]))
+        _form_row_with_preview(parent, t("label_folder"),
+                               state["folder"], ('.ppt', '.pptx'))
         _form_check(parent, t("label_delete_pptx"), state["delete"])
         return state
 
@@ -682,8 +682,8 @@ class PptxMergerTool(ToolBase):
             "folder":  tk.StringVar(),
             "outname": tk.StringVar(value="Birlestirilmis_Sunum.pptx"),
         }
-        _form_row(parent, t("label_folder"),
-                  state["folder"], lambda: _pick_folder(state["folder"]))
+        _form_row_with_preview(parent, t("label_folder"),
+                               state["folder"], ('.pptx',))
         _form_text(parent, t("label_outname_pptx"), state["outname"])
         return state
 
@@ -848,12 +848,35 @@ TOOLS: list[ToolBase] = [
 # ─────────────────────────────────────────────
 #  FORM YARDIMCILARI
 # ─────────────────────────────────────────────
-def _pick_folder(var: tk.StringVar):
+def _pick_folder(var: tk.StringVar, preview_label: tk.Label = None,
+                 extensions: tuple = ()):
     path = filedialog.askdirectory()
     if path:
         var.set(path)
+        if preview_label is not None:
+            _update_preview(path, preview_label, extensions)
 
-def _form_row(parent, label_text, var, browse_cmd):
+def _update_preview(folder: str, label: tk.Label, extensions: tuple):
+    """Klasördeki ilgili dosyaları tarayıp preview label'ı günceller."""
+    try:
+        files = sorted([
+            f for f in os.listdir(folder)
+            if f.lower().endswith(extensions) and not f.startswith('~$')
+        ])
+        if not files:
+            label.config(text="⚠️  Bu klasörde uygun dosya yok.",
+                         fg=THEME["log_err"])
+        else:
+            preview = "  ".join(files[:6])
+            if len(files) > 6:
+                preview += f"  (+{len(files)-6} daha)"
+            label.config(text=f"📂  {len(files)} dosya:  {preview}",
+                         fg=THEME["log_ok"])
+    except Exception:
+        label.config(text="", fg=THEME["subtext"])
+
+def _form_row_with_preview(parent, label_text, var, extensions: tuple):
+    """Klasör seçici + altında dosya önizleme etiketi."""
     frame = tk.Frame(parent, bg=THEME["card"])
     frame.pack(fill="x", pady=(0, sc(12)))
     tk.Label(frame, text=label_text, bg=THEME["card"],
@@ -868,8 +891,22 @@ def _form_row(parent, label_text, var, browse_cmd):
                      highlightcolor=THEME["accent"])
     entry.pack(side="left", fill="x", expand=True,
                ipady=sc(6), padx=(0, sc(8)))
+
+    # Preview label — başta boş
+    preview = tk.Label(frame, text="", bg=THEME["card"],
+                       fg=THEME["subtext"], font=THEME["font_sub"],
+                       anchor="w", wraplength=sc(440))
+    preview.pack(fill="x", pady=(sc(4), 0))
+
+    browse_cmd = lambda: _pick_folder(var, preview, extensions)
     HoverButton(row, text=t("btn_browse"),
                 command=browse_cmd, style="ghost").pack(side="right")
+
+    # Klasör elle yazılırsa da önizleme güncellensin
+    var.trace_add("write", lambda *_: _update_preview(
+        var.get().strip(), preview, extensions) if os.path.isdir(var.get().strip()) else None)
+
+
 
 def _form_text(parent, label_text, var):
     frame = tk.Frame(parent, bg=THEME["card"])
