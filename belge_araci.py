@@ -849,12 +849,14 @@ TOOLS: list[ToolBase] = [
 #  FORM YARDIMCILARI
 # ─────────────────────────────────────────────
 def _pick_folder(var: tk.StringVar, preview_label: tk.Label = None,
-                 extensions: tuple = ()):
+                 extensions: tuple = (), open_btn=None):
     path = filedialog.askdirectory()
     if path:
         var.set(path)
         if preview_label is not None:
             _update_preview(path, preview_label, extensions)
+        if open_btn is not None:
+            open_btn.pack(side="right")
 
 def _update_preview(folder: str, label: tk.Label, extensions: tuple):
     """Klasördeki ilgili dosyaları tarayıp preview label'ı günceller."""
@@ -892,19 +894,38 @@ def _form_row_with_preview(parent, label_text, var, extensions: tuple):
     entry.pack(side="left", fill="x", expand=True,
                ipady=sc(6), padx=(0, sc(8)))
 
-    # Preview label — başta boş
-    preview = tk.Label(frame, text="", bg=THEME["card"],
-                       fg=THEME["subtext"], font=THEME["font_sub"],
-                       anchor="w", wraplength=sc(440))
-    preview.pack(fill="x", pady=(sc(4), 0))
+    # Preview satırı: label + klasörü aç butonu
+    preview_row = tk.Frame(frame, bg=THEME["card"])
+    preview_row.pack(fill="x", pady=(sc(4), 0))
 
-    browse_cmd = lambda: _pick_folder(var, preview, extensions)
+    preview = tk.Label(preview_row, text="", bg=THEME["card"],
+                       fg=THEME["subtext"], font=THEME["font_sub"],
+                       anchor="w", wraplength=sc(380))
+    preview.pack(side="left", fill="x", expand=True)
+
+    def open_folder():
+        path = var.get().strip()
+        if os.path.isdir(path):
+            os.startfile(path)
+
+    open_btn = HoverButton(preview_row, text="🗂 Aç",
+                           command=open_folder, style="ghost")
+    # Başta gizli, klasör seçilince görünür
+    open_btn.pack_forget()
+
+    browse_cmd = lambda: _pick_folder(var, preview, extensions, open_btn)
     HoverButton(row, text=t("btn_browse"),
                 command=browse_cmd, style="ghost").pack(side="right")
 
-    # Klasör elle yazılırsa da önizleme güncellensin
-    var.trace_add("write", lambda *_: _update_preview(
-        var.get().strip(), preview, extensions) if os.path.isdir(var.get().strip()) else None)
+    def on_var_change(*_):
+        path = var.get().strip()
+        if os.path.isdir(path):
+            _update_preview(path, preview, extensions)
+            open_btn.pack(side="right")
+        else:
+            open_btn.pack_forget()
+
+    var.trace_add("write", on_var_change)
 
 
 
